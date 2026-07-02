@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tạo INV & PKL từ file Gút hàng</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#334155; --line:#475569;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#22c55e;
+    --warn:#f59e0b; --err:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Segoe UI',system-ui,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+  header{padding:20px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{margin:0;font-size:20px}
+  header p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .wrap{max-width:1200px;margin:0 auto;padding:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:20px}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:.15s}
+  .drop:hover,.drop.drag{border-color:var(--accent);background:rgba(56,189,248,.06)}
+  .drop b{color:var(--accent)}
+  .btn{background:var(--accent);color:#04283a;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.green{background:var(--accent2);color:#052e14}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .tag{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .tag.thuong{background:rgba(34,197,94,.15);color:#4ade80}
+  .tag.chenh{background:rgba(245,158,11,.15);color:#fbbf24}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;white-space:nowrap}
+  th{background:var(--panel2);position:sticky;top:0}
+  td.num,th.num{text-align:right}
+  .scroll{overflow:auto;max-height:460px;border:1px solid var(--line);border-radius:8px}
+  .tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+  .tabbtn{padding:7px 14px;border-radius:8px 8px 0 0;background:var(--panel2);border:1px solid var(--line);border-bottom:none;cursor:pointer;font-size:13px}
+  .tabbtn.active{background:var(--accent);color:#04283a;font-weight:600}
+  .muted{color:var(--muted)}
+  .hidden{display:none}
+  .stat{background:var(--panel2);border-radius:8px;padding:10px 14px;min-width:120px}
+  .stat b{display:block;font-size:20px}
+  .stat span{font-size:12px;color:var(--muted)}
+  .msg{padding:10px 14px;border-radius:8px;margin-top:12px;font-size:13px}
+  .msg.err{background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3)}
+  .msg.ok{background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(34,197,94,.3)}
+  h2{font-size:16px;margin:0 0 14px}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--accent)}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+  .blank{color:var(--warn);font-style:italic}
+  select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Tạo INV &amp; PKL từ file Gút hàng</h1>
+  <p>Upload file gút hàng (.xlsb / .xlsx) → tự động sinh Invoice &amp; Packing List. Các trường Unit price / Gender / Composition / CO FORM để trống (điền sau).</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div id="drop" class="drop">
+      <p style="margin:0 0 6px;font-size:15px">Kéo thả file gút hàng vào đây, hoặc <b>bấm để chọn file</b></p>
+      <p class="muted" style="margin:0;font-size:12px">Hỗ trợ .xlsb và .xlsx — tự nhận diện layout (có/không có cột CO FORM)</p>
+      <input type="file" id="file" accept=".xlsb,.xlsx,.xls" class="hidden">
+    </div>
+    <div id="loadMsg"></div>
+  </div>
+
+  <div id="result" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row">
+          <div class="stat"><b id="stLines">0</b><span>Dòng hàng</span></div>
+          <div class="stat"><b id="stPO">0</b><span>PO (style)</span></div>
+          <div class="stat"><b id="stQty">0</b><span>Tổng SL (pcs)</span></div>
+          <div class="stat"><b id="stCtn">0</b><span>Tổng thùng</span></div>
+          <div class="stat"><b id="stNW">0</b><span>N.W (kg)</span></div>
+          <div class="stat"><b id="stGW">0</b><span>G.W (kg)</span></div>
+        </div>
+        <div class="row">
+          <button id="btnExport" class="btn green">⬇ Tải file INV + PKL (.xlsx)</button>
+        </div>
+      </div>
+      <div id="srcInfo" class="msg ok"></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <div class="tabbtn active" data-tab="inv">INVOICE</div>
+        <div class="tabbtn" data-tab="map">PKL — Phân loại form</div>
+        <div class="tabbtn" data-tab="pkl">PKL — Chi tiết đóng thùng</div>
+      </div>
+
+      <div id="tab-inv">
+        <h2>Commercial Invoice <span class="muted" style="font-weight:400;font-size:12px">(cột <span class="blank">vàng nghiêng</span> = để trống, điền sau)</span></h2>
+        <div class="scroll"><table id="invTable"></table></div>
+      </div>
+
+      <div id="tab-map" class="hidden">
+        <h2>Phân loại form Packing List theo PO</h2>
+        <p class="muted" style="font-size:13px;margin-top:-6px">Quy tắc: Σ CTNs real = Σ CTNs small → <span class="tag thuong">THƯỜNG</span> (<code>&lt;style&gt;</code> + <code>PLS &lt;style&gt;</code>). Khác nhau → <span class="tag chenh">CHÊNH</span> (<code>SOLID PL</code> + <code>IRREGULAR SS PL</code>).</p>
+        <div class="scroll"><table id="mapTable"></table></div>
+      </div>
+
+      <div id="tab-pkl" class="hidden">
+        <h2>Chi tiết đóng thùng theo PO</h2>
+        <div class="row" style="margin-bottom:10px">
+          <label class="muted" style="font-size:13px">Chọn PO:</label>
+          <select id="poSel"></select>
+          <span id="poForm"></span>
+        </div>
+        <div id="pklDetail"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary style="cursor:pointer;font-weight:600">ℹ️ Ghi chú logic (bấm để xem)</summary>
+      <div class="muted" style="font-size:13px;margin-top:10px">
+        <p><b>Nguồn dữ liệu:</b> app ưu tiên sheet <code>Delivery list</code>, nếu không có thì dùng <code>hang</code>, tự bỏ qua các dòng subtotal (dòng không có Reference/Order). Cột được nhận diện theo <b>tên trong header</b> nên chạy được cả file gốc (không có cột CO FORM) lẫn file đã xử lý.</p>
+        <p><b>Invoice:</b> PO←Order, Reference, Color, Carton←CTNs real, Carton Small←CTNs small, Quantity←Qty real, PLID. Amount = Quantity × Unit price (công thức Excel). Gender / Composition / Unit price / CO FORM để trống.</p>
+        <p><b>Packing List:</b> gom theo PO, so Σ CTNs real vs Σ CTNs small để chọn form. Chi tiết carton đọc từ sheet cùng tên PO; với PO chênh, tách thùng có ghi chú (ODD CARTON / Small box / Master box) sang phần IRREGULAR, còn lại là SOLID.</p>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+/* ============ Cấu hình cột (nhận diện theo tên header) ============ */
+const COLS = {
+  customer:  ['customer'],
+  zone:      ['zone'],
+  reference: ['reference'],
+  color:     ['color'],
+  colorCode: ['color code'],
+  order:     ['order'],
+  coform:    ['co form'],
+  qty:       ['qty'],
+  unit:      ['unit'],
+  ctnReal:   ['ctns real','ctn real','ctns\nreal'],
+  ctnSmall:  ['ctns small','ctn small','ctns\nsmall'],
+  qtyReal:   ['qty real','qty\nreal'],
+  vol:       ['vol(m3)','vol (m3)','vol'],
+  nw:        ['n.w (kg)','n.w(kg)','nw'],
+  gw:        ['g.w (kg)','g.w(kg)','gw'],
+  plid:      ['plid'],
+  market:    ['market'],
+  whouse:    ['warehouse location'],
+  buyer:     ['buyer'],
+  freight:   ['freight terms'],
+};
+const norm = s => (s==null?'':String(s)).replace(/\s+/g,' ').trim().toLowerCase();
+
+let STATE = null; // {lines, pos, srcSheet, workbook}
+
+/* ============ Đọc file ============ */
+function readFile(file){
+  const rd = new FileReader();
+  rd.onload = e => {
+    try{
+      const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+      process(wb, file.name);
+    }catch(err){
+      showLoad('Lỗi đọc file: '+err.message, true);
+      console.error(err);
+    }
+  };
+  rd.readAsArrayBuffer(file);
+}
+
+function findHeaderRow(rows){
+  for(let i=0;i<Math.min(rows.length,15);i++){
+    const set = rows[i].map(norm);
+    if(set.includes('reference') && set.includes('order')) return i;
+  }
+  return -1;
+}
+
+function buildColMap(headerRow){
+  const map = {};
+  const hn = headerRow.map(norm);
+  for(const key in COLS){
+    for(const alias of COLS[key]){
+      const idx = hn.indexOf(norm(alias));
+      if(idx>=0){ map[key]=idx; break; }
+    }
+  }
+  return map;
+}
+
+function process(wb, fname){
+  // 1) chọn sheet dữ liệu
+  const names = wb.SheetNames;
+  const pick = names.find(n=>norm(n)==='delivery list') || names.find(n=>norm(n)==='hang');
+  if(!pick){ showLoad('Không tìm thấy sheet "Delivery list" hoặc "hang" trong file.', true); return; }
+  const ws = wb.Sheets[pick];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null, blankrows:false});
+  const hr = findHeaderRow(rows);
+  if(hr<0){ showLoad('Không tìm thấy hàng tiêu đề (cần cột Reference và Order).', true); return; }
+  const cmap = buildColMap(rows[hr]);
+  const hasCoform = cmap.coform!=null;
+
+  // 2) đọc dòng dữ liệu
+  const g = (r,k)=> cmap[k]==null ? null : r[cmap[k]];
+  const lines = [];
+  for(let i=hr+1;i<rows.length;i++){
+    const r = rows[i];
+    const ref = g(r,'reference'), ord = g(r,'order');
+    if(typeof ref!=='string' || typeof ord!=='string') continue; // bỏ subtotal
+    if(!ref.trim() || !ord.trim()) continue;
+    lines.push({
+      customer:g(r,'customer'), zone:g(r,'zone'),
+      reference:ref.trim(), color:(g(r,'color')||'').toString().trim(),
+      colorCode:g(r,'colorCode'), order:ord.trim(), coform:g(r,'coform'),
+      qty:num(g(r,'qty')), unit:g(r,'unit'),
+      ctnReal:num(g(r,'ctnReal')), ctnSmall:num(g(r,'ctnSmall')),
+      qtyReal:num(g(r,'qtyReal')), vol:num(g(r,'vol')),
+      nw:num(g(r,'nw')), gw:num(g(r,'gw')), plid:g(r,'plid'),
+      market:g(r,'market'), buyer:g(r,'buyer'), freight:g(r,'freight'),
+    });
+  }
+  if(!lines.length){ showLoad('Không đọc được dòng hàng nào.', true); return; }
+
+  // 3) gom theo PO + phân loại form
+  const poMap = {};
+  lines.forEach(l=>{
+    if(!poMap[l.order]) poMap[l.order]={order:l.order,lines:[],real:0,small:0,qty:0,nw:0,gw:0,vol:0};
+    const p=poMap[l.order];
+    p.lines.push(l); p.real+=l.ctnReal; p.small+=l.ctnSmall;
+    p.qty+=(l.qtyReal||l.qty); p.nw+=l.nw; p.gw+=l.gw; p.vol+=l.vol;
+  });
+  const pos = Object.values(poMap);
+  pos.forEach(p=>{
+    p.form = Math.round(p.real)===Math.round(p.small) ? 'THUONG' : 'CHENH';
+    p.sheets = p.form==='THUONG'
+      ? [p.order, 'PLS '+p.order]
+      : ['SOLID PL '+p.order, 'IRREGULAR SS PL '+p.order];
+    p.cartons = parseStyleSheet(wb, p.order); // chi tiết carton (nếu có sheet)
+  });
+
+  STATE = {lines, pos, srcSheet:pick, fname, hasCoform};
+  render();
+  showLoad(`Đã đọc <b>${fname}</b> — sheet <code>${pick}</code>, ${lines.length} dòng, ${pos.length} PO.`+
+           (hasCoform?'':' <span class="muted">(file gốc: không có cột CO FORM — đã tự map lệch cột)</span>'), false, true);
+}
+
+/* ============ Parse sheet chi tiết theo style ============ */
+function parseStyleSheet(wb, po){
+  const name = wb.SheetNames.find(n=>norm(n)===norm(po));
+  if(!name) return null;
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:true, defval:null, blankrows:false});
+  // tìm header có 'CASE' & 'TOT CTNS'
+  let hr=-1;
+  for(let i=0;i<Math.min(rows.length,12);i++){
+    const s=rows[i].map(norm);
+    if(s.includes('case') && s.some(x=>x.includes('tot ctns'))){ hr=i; break; }
+  }
+  if(hr<0) return null;
+  // nhãn size ở cột 6..15, ưu tiên dòng dưới (1X/2X/3X) nếu là chuỗi
+  const h1=rows[hr], h2=rows[hr+1]||[];
+  const sizeCols=[];
+  for(let c=6;c<=15;c++){
+    let lab = (typeof h2[c]==='string' && h2[c].trim()) ? h2[c] : h1[c];
+    if(lab!=null && lab!=='') sizeCols.push({c, label:String(lab).replace('.0','').trim()});
+  }
+  const C={caseFrom:0,caseTo:1,style:2,color:3,ccode:4,units:5,totCtn:16,totPcs:17,vol:18,nw:19,gw:20,note:21,L:22,W:23,H:24};
+  const cartons=[]; let curRef=null,curColor=null;
+  for(let i=hr+2;i<rows.length;i++){
+    const r=rows[i];
+    const first=r[C.caseFrom];
+    const t15=norm(r[15]);
+    if(t15==='total') break;
+    if(typeof first==='string' && norm(first).includes('packing list')) break;
+    // dòng carton hợp lệ: caseFrom là số
+    if(typeof first!=='number') continue;
+    if(typeof r[C.style]==='string' && r[C.style].trim()){ curRef=r[C.style].trim(); curColor=(r[C.color]||'').toString().trim(); }
+    else if(typeof r[C.color]==='string' && r[C.color].trim()){ curColor=r[C.color].trim(); }
+    const sizes = sizeCols.map(s=>({label:s.label, qty:num(r[s.c])})).filter(s=>s.qty>0);
+    const note = (r[C.note]||'').toString().trim();
+    cartons.push({
+      from:num(first), to:num(r[C.caseTo]), reference:curRef, color:curColor,
+      units:num(r[C.units]), sizes, totCtn:num(r[C.totCtn]), totPcs:num(r[C.totPcs]),
+      vol:num(r[C.vol]), nw:num(r[C.nw]), gw:num(r[C.gw]), note,
+      dim:[num(r[C.L]),num(r[C.W]),num(r[C.H])],
+      irregular: !!note || sizes.length>1
+    });
+  }
+  return cartons;
+}
+
+/* ============ Helpers ============ */
+function num(v){ const n=typeof v==='number'?v:parseFloat(v); return isFinite(n)?n:0; }
+function r2(n){ return Math.round(n*100)/100; }
+function r3(n){ return Math.round(n*1000)/1000; }
+function fmt(n,d=2){ return Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:d}); }
+function sizeStr(sizes){ return sizes.map(s=>`${s.label}×${s.qty}`).join(', '); }
+
+/* ============ Render UI ============ */
+function render(){
+  document.getElementById('result').classList.remove('hidden');
+  const L=STATE.lines, P=STATE.pos;
+  const tot={qty:0,ctn:0,small:0,nw:0,gw:0};
+  L.forEach(l=>{tot.qty+=(l.qtyReal||l.qty);tot.ctn+=l.ctnReal;tot.small+=l.ctnSmall;tot.nw+=l.nw;tot.gw+=l.gw;});
+  document.getElementById('stLines').textContent=L.length;
+  document.getElementById('stPO').textContent=P.length;
+  document.getElementById('stQty').textContent=fmt(tot.qty,0);
+  document.getElementById('stCtn').textContent=fmt(tot.ctn,0);
+  document.getElementById('stNW').textContent=fmt(tot.nw,1);
+  document.getElementById('stGW').textContent=fmt(tot.gw,1);
+  document.getElementById('srcInfo').innerHTML=
+    `Nguồn: sheet <code>${STATE.srcSheet}</code> · ${L.length} dòng · ${P.length} PO · `+
+    `<span class="tag thuong">THƯỜNG ${P.filter(p=>p.form==='THUONG').length}</span> `+
+    `<span class="tag chenh">CHÊNH ${P.filter(p=>p.form==='CHENH').length}</span>`;
+
+  // INVOICE table
+  let h='<tr><th>PO</th><th>Reference</th><th>Color</th><th>Gender</th><th>Composition</th>'+
+        '<th class="num">Carton</th><th class="num">Carton Small</th><th class="num">Quantity</th>'+
+        '<th class="num">Unit price</th><th class="num">Amount</th><th>PLID</th><th>CO FORM</th></tr>';
+  L.forEach(l=>{
+    h+=`<tr><td>${l.order}</td><td>${l.reference}</td><td>${l.color||''}</td>`+
+       `<td class="blank">—</td><td class="blank">—</td>`+
+       `<td class="num">${fmt(l.ctnReal,0)}</td><td class="num">${fmt(l.ctnSmall,0)}</td>`+
+       `<td class="num">${fmt(l.qtyReal||l.qty,0)}</td>`+
+       `<td class="num blank">—</td><td class="num blank">—</td>`+
+       `<td>${l.plid!=null?l.plid:''}</td><td class="blank">—</td></tr>`;
+  });
+  h+=`<tr style="font-weight:700;background:var(--panel2)"><td colspan="5">TOTAL</td>`+
+     `<td class="num">${fmt(tot.ctn,0)}</td><td class="num">${fmt(tot.small,0)}</td>`+
+     `<td class="num">${fmt(tot.qty,0)}</td><td></td><td class="num blank">—</td><td></td><td></td></tr>`;
+  document.getElementById('invTable').innerHTML=h;
+
+  // MAP table
+  let m='<tr><th>PO</th><th class="num">Σ CTNs real</th><th class="num">Σ CTNs small</th><th>Form</th><th>Sheet dùng</th><th class="num">Qty</th><th class="num">N.W</th><th class="num">G.W</th><th>Carton sheet</th></tr>';
+  P.forEach(p=>{
+    m+=`<tr><td><b>${p.order}</b></td><td class="num">${fmt(p.real,0)}</td><td class="num">${fmt(p.small,0)}</td>`+
+       `<td><span class="tag ${p.form==='THUONG'?'thuong':'chenh'}">${p.form==='THUONG'?'THƯỜNG':'CHÊNH'}</span></td>`+
+       `<td><code>${p.sheets[0]}</code> + <code>${p.sheets[1]}</code></td>`+
+       `<td class="num">${fmt(p.qty,0)}</td><td class="num">${fmt(p.nw,1)}</td><td class="num">${fmt(p.gw,1)}</td>`+
+       `<td>${p.cartons?('✔ '+p.cartons.length+' thùng'):'<span class="muted">không có</span>'}</td></tr>`;
+  });
+  document.getElementById('mapTable').innerHTML=m;
+
+  // PKL detail selector
+  const sel=document.getElementById('poSel');
+  sel.innerHTML=P.map(p=>`<option value="${p.order}">${p.order} (${p.form==='THUONG'?'thường':'chênh'})</option>`).join('');
+  sel.onchange=()=>renderPklDetail(sel.value);
+  renderPklDetail(P[0].order);
+}
+
+function renderPklDetail(po){
+  const p=STATE.pos.find(x=>x.order===po);
+  document.getElementById('poForm').innerHTML=
+    `<span class="tag ${p.form==='THUONG'?'thuong':'chenh'}">${p.form==='THUONG'?'FORM THƯỜNG':'FORM CHÊNH'}</span> `+
+    `<span class="muted" style="font-size:12px">→ ${p.sheets.join(' + ')}</span>`;
+  const box=document.getElementById('pklDetail');
+  if(!p.cartons){ box.innerHTML='<p class="muted">Không tìm thấy sheet chi tiết carton cho PO này.</p>'; return; }
+  const groups = p.form==='CHENH'
+    ? [{title:'SOLID (thùng nguyên)',rows:p.cartons.filter(c=>!c.irregular)},
+       {title:'IRREGULAR / SS (thùng lẻ - mixed)',rows:p.cartons.filter(c=>c.irregular)}]
+    : [{title:'PACKING LIST (form thường)',rows:p.cartons}];
+  let html='';
+  groups.forEach(gr=>{
+    html+=`<h3>${gr.title} <span class="muted" style="font-weight:400">(${gr.rows.length} dòng)</span></h3>`;
+    if(!gr.rows.length){ html+='<p class="muted" style="font-size:13px">— không có —</p>'; return; }
+    html+='<div class="scroll"><table><tr><th>Case</th><th>Reference</th><th>Color</th><th class="num">Units/case</th><th>Sizes</th><th class="num">Tot ctns</th><th class="num">Tot pcs</th><th class="num">N.W</th><th class="num">G.W</th><th>Ctn size (L×W×H)</th><th>Note</th></tr>';
+    gr.rows.forEach(c=>{
+      const caseLbl = c.from===c.to?c.from:`${c.from}-${c.to}`;
+      html+=`<tr><td>${caseLbl}</td><td>${c.reference||''}</td><td>${c.color||''}</td>`+
+            `<td class="num">${fmt(c.units,0)}</td><td>${sizeStr(c.sizes)}</td>`+
+            `<td class="num">${fmt(c.totCtn,0)}</td><td class="num">${fmt(c.totPcs,0)}</td>`+
+            `<td class="num">${fmt(c.nw,2)}</td><td class="num">${fmt(c.gw,2)}</td>`+
+            `<td>${c.dim.filter(x=>x).length?c.dim.map(x=>x||'').join('×'):''}</td><td>${c.note||''}</td></tr>`;
+    });
+    html+='</table></div>';
+  });
+  box.innerHTML=html;
+}
+
+/* ============ Export xlsx ============ */
+function exportXlsx(){
+  const {lines:L, pos:P} = STATE;
+  const wb = XLSX.utils.book_new();
+
+  /* ---- INVOICE ---- */
+  const aoa=[
+    ['COMMERCIAL INVOICE'],[],
+    ['PO','Reference','Color','Gender','Composition','Carton','Carton Small','Quantity','Unit price (USD)','Amount (USD)','PLID','CO FORM']
+  ];
+  const first=4; // hàng dữ liệu đầu (1-based excel) = 4
+  L.forEach((l,i)=>{
+    const rIdx=first+i;
+    aoa.push([l.order,l.reference,l.color||'','','',
+      l.ctnReal,l.ctnSmall,(l.qtyReal||l.qty),'',
+      {t:'n',f:`H${rIdx}*I${rIdx}`}, l.plid!=null?l.plid:'', '']);
+  });
+  const last=first+L.length-1;
+  aoa.push(['TOTAL','','','','',
+    {t:'n',f:`SUM(F${first}:F${last})`},{t:'n',f:`SUM(G${first}:G${last})`},
+    {t:'n',f:`SUM(H${first}:H${last})`},'',{t:'n',f:`SUM(J${first}:J${last})`},'','']);
+  const inv=XLSX.utils.aoa_to_sheet(aoa);
+  inv['!cols']=[{wch:8},{wch:12},{wch:14},{wch:8},{wch:26},{wch:8},{wch:11},{wch:10},{wch:13},{wch:13},{wch:12},{wch:9}];
+  XLSX.utils.book_append_sheet(wb,inv,'INVOICE');
+
+  /* ---- PKL_FormMap ---- */
+  const mapAoa=[['PO','Sum CTNs real','Sum CTNs small','Form','Sheet 1','Sheet 2','Qty','N.W','G.W','Vol(m3)']];
+  P.forEach(p=>mapAoa.push([p.order,r2(p.real),r2(p.small),
+    p.form==='THUONG'?'THUONG':'CHENH',p.sheets[0],p.sheets[1],
+    r2(p.qty),r2(p.nw),r2(p.gw),r3(p.vol)]));
+  const mp=XLSX.utils.aoa_to_sheet(mapAoa);
+  mp['!cols']=[{wch:8},{wch:14},{wch:15},{wch:9},{wch:18},{wch:22},{wch:9},{wch:9},{wch:9},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,mp,'PKL_FormMap');
+
+  /* ---- PKL_Summary (theo reference) ---- */
+  const sumAoa=[['PACKING LIST — SUMMARY'],[],
+    ['PO','Reference','Color','Quantity','Cartons','N.W (kg)','G.W (kg)','Vol (m3)']];
+  L.forEach(l=>sumAoa.push([l.order,l.reference,l.color||'',
+    (l.qtyReal||l.qty),l.ctnReal,r2(l.nw),r2(l.gw),r3(l.vol)]));
+  const sm=XLSX.utils.aoa_to_sheet(sumAoa);
+  sm['!cols']=[{wch:8},{wch:12},{wch:14},{wch:10},{wch:9},{wch:10},{wch:10},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,sm,'PKL_Summary');
+
+  /* ---- Chi tiết carton từng PO ---- */
+  P.forEach(p=>{
+    if(!p.cartons) return;
+    const a=[[`PACKING LIST DETAIL — ${p.order}  (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})`],
+             [`Sheets: ${p.sheets.join(' + ')}`],[]];
+    const header=['Case','Reference','Color','Units/case','Sizes','Tot ctns','Tot pcs','N.W','G.W','L','W','H','Note','Group'];
+    const push=(rows,grp)=>rows.forEach(c=>{
+      a.push([c.from===c.to?c.from:`${c.from}-${c.to}`,c.reference||'',c.color||'',c.units,
+        sizeStr(c.sizes),c.totCtn,c.totPcs,r2(c.nw),r2(c.gw),c.dim[0],c.dim[1],c.dim[2],c.note,grp]);
+    });
+    if(p.form==='CHENH'){
+      a.push(['--- SOLID (thùng nguyên) ---']); a.push(header);
+      push(p.cartons.filter(c=>!c.irregular),'SOLID');
+      a.push([]); a.push(['--- IRREGULAR / SS (thùng lẻ) ---']); a.push(header);
+      push(p.cartons.filter(c=>c.irregular),'IRREGULAR');
+    }else{
+      a.push(header); push(p.cartons,'THUONG');
+    }
+    const ws=XLSX.utils.aoa_to_sheet(a);
+    ws['!cols']=[{wch:9},{wch:12},{wch:16},{wch:9},{wch:16},{wch:8},{wch:8},{wch:7},{wch:7},{wch:5},{wch:5},{wch:5},{wch:12},{wch:10}];
+    let nm=('PL '+p.order).substring(0,31);
+    XLSX.utils.book_append_sheet(wb,ws,nm);
+  });
+
+  const base=(STATE.fname||'gut_hang').replace(/\.(xlsb|xlsx|xls)$/i,'');
+  XLSX.writeFile(wb, `INV_PKL_${base}.xlsx`);
+}
+
+/* ============ UI wiring ============ */
+const drop=document.getElementById('drop'), fileEl=document.getElementById('file');
+drop.onclick=()=>fileEl.click();
+fileEl.onchange=e=>{ if(e.target.files[0]) readFile(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
+drop.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+document.getElementById('btnExport').onclick=exportXlsx;
+document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  ['inv','map','pkl'].forEach(t=>document.getElementById('tab-'+t).classList.toggle('hidden',t!==b.dataset.tab));
+});
+function showLoad(msg,isErr,ok){
+  document.getElementById('loadMsg').innerHTML=`<div class="msg ${isErr?'err':(ok?'ok':'')}">${msg}</div>`;
+}
+</script>
+</body>
+</html>
