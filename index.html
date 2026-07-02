@@ -242,7 +242,7 @@ function process(wb, fname){
     p.sheets = p.form==='THUONG'
       ? [p.order, 'PLS '+p.order]
       : ['SOLID PL '+p.order, 'IRREGULAR SS PL '+p.order];
-    p.cartons = parseStyleSheet(wb, p.order); // chi tiết carton (nếu có sheet)
+    p.detail = parseStyleSheet(wb, p.order); // {cartons, sizeLabels} hoặc null
   });
 
   STATE = {lines, pos, srcSheet:pick, fname, hasCoform};
@@ -271,28 +271,37 @@ function parseStyleSheet(wb, po){
     if(lab!=null && lab!=='') sizeCols.push({c, label:String(lab).replace('.0','').trim()});
   }
   const C={caseFrom:0,caseTo:1,style:2,color:3,ccode:4,units:5,totCtn:16,totPcs:17,vol:18,nw:19,gw:20,note:21,L:22,W:23,H:24};
-  const cartons=[]; let curRef=null,curColor=null;
+  const cartons=[]; let curRef=null,curColor=null,curCode=null;
+  const usedLabels=new Set();
   for(let i=hr+2;i<rows.length;i++){
     const r=rows[i];
     const first=r[C.caseFrom];
-    const t15=norm(r[15]);
-    if(t15==='total') break;
+    if(norm(r[15])==='total') break;
     if(typeof first==='string' && norm(first).includes('packing list')) break;
-    // dòng carton hợp lệ: caseFrom là số
-    if(typeof first!=='number') continue;
-    if(typeof r[C.style]==='string' && r[C.style].trim()){ curRef=r[C.style].trim(); curColor=(r[C.color]||'').toString().trim(); }
-    else if(typeof r[C.color]==='string' && r[C.color].trim()){ curColor=r[C.color].trim(); }
+    if(typeof first!=='number') continue; // bỏ dòng subtotal/master box/ghi chú
+    if(typeof r[C.style]==='string' && r[C.style].trim()){ curRef=r[C.style].trim(); curColor=(r[C.color]||'').toString().trim(); curCode=(r[C.ccode]!=null?String(r[C.ccode]).trim():''); }
+    else{ if(typeof r[C.color]==='string' && r[C.color].trim()) curColor=r[C.color].trim(); if(r[C.ccode]!=null && String(r[C.ccode]).trim()) curCode=String(r[C.ccode]).trim(); }
     const sizes = sizeCols.map(s=>({label:s.label, qty:num(r[s.c])})).filter(s=>s.qty>0);
+    sizes.forEach(s=>usedLabels.add(s.label));
     const note = (r[C.note]||'').toString().trim();
+    const totCtn=num(r[C.totCtn]);           // = CTN real (đã gộp master box)
+    const totPcs=num(r[C.totPcs]);
+    const ctnSmall = totCtn>0 ? totCtn : (totPcs>0 ? 1 : 0); // thùng lẻ đếm riêng
+    const ttlNw=num(r[C.nw]), ttlGw=num(r[C.gw]); // gút lưu TTL NW/GW cho cả dòng
     cartons.push({
-      from:num(first), to:num(r[C.caseTo]), reference:curRef, color:curColor,
-      units:num(r[C.units]), sizes, totCtn:num(r[C.totCtn]), totPcs:num(r[C.totPcs]),
-      vol:num(r[C.vol]), nw:num(r[C.nw]), gw:num(r[C.gw]), note,
+      from:num(first), to:num(r[C.caseTo]), reference:curRef, color:curColor, colorCode:curCode,
+      units:num(r[C.units]), sizes,
+      ctnReal:totCtn, ctnSmall, totPcs,
+      vol:num(r[C.vol]),
+      nwPer: totCtn>0?ttlNw/totCtn:ttlNw, gwPer: totCtn>0?ttlGw/totCtn:ttlGw,
+      ttlNw, ttlGw, note,
       dim:[num(r[C.L]),num(r[C.W]),num(r[C.H])],
-      irregular: !!note || sizes.length>1
+      irregular: !!note
     });
   }
-  return cartons;
+  // thứ tự size theo header, chỉ giữ size có dùng
+  const sizeLabels = sizeCols.map(s=>s.label).filter(l=>usedLabels.has(l));
+  return {cartons, sizeLabels};
 }
 
 /* ============ Helpers ============ */
@@ -343,7 +352,7 @@ function render(){
        `<td><span class="tag ${p.form==='THUONG'?'thuong':'chenh'}">${p.form==='THUONG'?'THƯỜNG':'CHÊNH'}</span></td>`+
        `<td><code>${p.sheets[0]}</code> + <code>${p.sheets[1]}</code></td>`+
        `<td class="num">${fmt(p.qty,0)}</td><td class="num">${fmt(p.nw,1)}</td><td class="num">${fmt(p.gw,1)}</td>`+
-       `<td>${p.cartons?('✔ '+p.cartons.length+' thùng'):'<span class="muted">không có</span>'}</td></tr>`;
+       `<td>${p.detail?('✔ '+p.detail.cartons.length+' dòng thùng'):'<span class="muted">không có</span>'}</td></tr>`;
   });
   document.getElementById('mapTable').innerHTML=m;
 
@@ -360,28 +369,35 @@ function renderPklDetail(po){
     `<span class="tag ${p.form==='THUONG'?'thuong':'chenh'}">${p.form==='THUONG'?'FORM THƯỜNG':'FORM CHÊNH'}</span> `+
     `<span class="muted" style="font-size:12px">→ ${p.sheets.join(' + ')}</span>`;
   const box=document.getElementById('pklDetail');
-  if(!p.cartons){ box.innerHTML='<p class="muted">Không tìm thấy sheet chi tiết carton cho PO này.</p>'; return; }
-  const groups = p.form==='CHENH'
-    ? [{title:'SOLID (thùng nguyên)',rows:p.cartons.filter(c=>!c.irregular)},
-       {title:'IRREGULAR / SS (thùng lẻ - mixed)',rows:p.cartons.filter(c=>c.irregular)}]
-    : [{title:'PACKING LIST (form thường)',rows:p.cartons}];
-  let html='';
-  groups.forEach(gr=>{
-    html+=`<h3>${gr.title} <span class="muted" style="font-weight:400">(${gr.rows.length} dòng)</span></h3>`;
-    if(!gr.rows.length){ html+='<p class="muted" style="font-size:13px">— không có —</p>'; return; }
-    html+='<div class="scroll"><table><tr><th>Case</th><th>Reference</th><th>Color</th><th class="num">Units/case</th><th>Sizes</th><th class="num">Tot ctns</th><th class="num">Tot pcs</th><th class="num">N.W</th><th class="num">G.W</th><th>Ctn size (L×W×H)</th><th>Note</th></tr>';
-    gr.rows.forEach(c=>{
-      const caseLbl = c.from===c.to?c.from:`${c.from}-${c.to}`;
-      html+=`<tr><td>${caseLbl}</td><td>${c.reference||''}</td><td>${c.color||''}</td>`+
-            `<td class="num">${fmt(c.units,0)}</td><td>${sizeStr(c.sizes)}</td>`+
-            `<td class="num">${fmt(c.totCtn,0)}</td><td class="num">${fmt(c.totPcs,0)}</td>`+
-            `<td class="num">${fmt(c.nw,2)}</td><td class="num">${fmt(c.gw,2)}</td>`+
-            `<td>${c.dim.filter(x=>x).length?c.dim.map(x=>x||'').join('×'):''}</td><td>${c.note||''}</td></tr>`;
-    });
-    html+='</table></div>';
+  if(!p.detail){ box.innerHTML='<p class="muted">Không tìm thấy sheet chi tiết carton cho PO này.</p>'; return; }
+  const {cartons, sizeLabels}=p.detail;
+  const cntCol = p.form==='CHENH' ? 'CTN small (IRREGULAR)' : 'TOT CTN';
+  const totPcs=cartons.reduce((s,c)=>s+c.totPcs,0);
+  const totReal=cartons.reduce((s,c)=>s+c.ctnReal,0);
+  const totSmall=cartons.reduce((s,c)=>s+c.ctnSmall,0);
+  let html=`<p class="muted" style="font-size:13px;margin-top:0">Tất cả thùng đều thuộc cùng danh sách — 2 form chỉ khác cột đếm số thùng. `+
+    `Tổng: <b>${fmt(totPcs,0)} pcs</b> · CTN real <b>${fmt(totReal,0)}</b> · CTN small <b>${fmt(totSmall,0)}</b></p>`;
+  html+='<div class="scroll"><table><tr><th>Case</th><th>Reference</th><th>Color</th><th>Code</th><th class="num">Units/case</th>'+
+    sizeLabels.map(l=>`<th class="num">${l}</th>`).join('')+
+    '<th class="num">CTN real</th><th class="num">CTN small</th><th class="num">TOT PCS</th>'+
+    '<th class="num">NW</th><th class="num">GW</th><th class="num">TTL NW</th><th class="num">TTL GW</th><th>Carton size (cm)</th><th>Remark</th></tr>';
+  cartons.forEach(c=>{
+    const caseLbl=c.from===c.to?c.from:`${c.from}-${c.to}`;
+    const smap={}; c.sizes.forEach(s=>smap[s.label]=s.qty);
+    html+=`<tr><td>${caseLbl}</td><td>${c.reference||''}</td><td>${c.color||''}</td><td>${c.colorCode||''}</td>`+
+      `<td class="num">${fmt(c.units,0)}</td>`+
+      sizeLabels.map(l=>`<td class="num">${smap[l]?fmt(smap[l],0):''}</td>`).join('')+
+      `<td class="num">${c.ctnReal?fmt(c.ctnReal,0):''}</td><td class="num">${fmt(c.ctnSmall,0)}</td><td class="num">${fmt(c.totPcs,0)}</td>`+
+      `<td class="num">${fmt(c.nwPer,2)}</td><td class="num">${fmt(c.gwPer,2)}</td>`+
+      `<td class="num">${fmt(c.ttlNw,2)}</td><td class="num">${fmt(c.ttlGw,2)}</td>`+
+      `<td>${dimCm(c.dim)}</td><td>${c.note||''}</td></tr>`;
   });
+  html+=`<tr style="font-weight:700;background:var(--panel2)"><td colspan="${5+sizeLabels.length}">TOTAL</td>`+
+    `<td class="num">${fmt(totReal,0)}</td><td class="num">${fmt(totSmall,0)}</td><td class="num">${fmt(totPcs,0)}</td><td colspan="5"></td></tr>`;
+  html+='</table></div>';
   box.innerHTML=html;
 }
+function dimCm(inch){ if(!inch.filter(x=>x).length) return ''; return inch.map(x=>x?r2(x*2.54):0).join('*'); }
 
 /* ============ Export xlsx (ExcelJS + template, giữ nguyên định dạng) ============ */
 const TEMPLATE_URL='template.xlsx';
@@ -483,20 +499,24 @@ function appendDataSheets(wb, S){
   sm.addRow(['PO','Reference','Color','Quantity','Carton','Carton Small','N.W (kg)','G.W (kg)','Vol (m3)','PLID']);
   L.forEach(l=>sm.addRow([l.order,l.reference,l.color||'',(l.qtyReal||l.qty),l.ctnReal,l.ctnSmall,r2(l.nw),r2(l.gw),r3(l.vol),l.plid!=null?l.plid:'']));
   sm.getRow(1).font={bold:true};
-  // Chi tiết carton từng PO
+  // Chi tiết carton từng PO (tất cả thùng; đúng tổng pcs)
   P.forEach(p=>{
-    if(!p.cartons) return;
+    if(!p.detail) return;
+    const {cartons, sizeLabels}=p.detail;
     const ws=wb.addWorksheet(('PL '+p.order).substring(0,31));
-    ws.addRow([`PACKING LIST DETAIL — ${p.order} (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})`]);
-    ws.addRow([`Sheets: ${p.sheets.join(' + ')}`]); ws.addRow([]);
-    const header=['Case','Reference','Color','Units/case','Sizes','Tot ctns','Tot pcs','N.W','G.W','L','W','H','Note','Group'];
-    const push=(rows,grp)=>rows.forEach(c=>ws.addRow([c.from===c.to?c.from:`${c.from}-${c.to}`,c.reference||'',c.color||'',c.units,sizeStr(c.sizes),c.totCtn,c.totPcs,r2(c.nw),r2(c.gw),c.dim[0],c.dim[1],c.dim[2],c.note,grp]));
-    if(p.form==='CHENH'){
-      ws.addRow(['--- SOLID (thùng nguyên) ---']); ws.addRow(header);
-      push(p.cartons.filter(c=>!c.irregular),'SOLID');
-      ws.addRow([]); ws.addRow(['--- IRREGULAR / SS (thùng lẻ) ---']); ws.addRow(header);
-      push(p.cartons.filter(c=>c.irregular),'IRREGULAR');
-    }else{ ws.addRow(header); push(p.cartons,'THUONG'); }
+    ws.addRow([`PACKING LIST DETAIL — ${p.order} (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})  → ${p.sheets.join(' + ')}`]);
+    ws.addRow([]);
+    const header=['Case','Reference','Color','Color code','Units/case',...sizeLabels,'CTN real','CTN small','TOT PCS','NW','GW','TTL NW','TTL GW','Carton size (cm)','Remark'];
+    ws.addRow(header); ws.getRow(3).font={bold:true};
+    cartons.forEach(c=>{
+      const smap={}; c.sizes.forEach(s=>smap[s.label]=s.qty);
+      ws.addRow([c.from===c.to?c.from:`${c.from}-${c.to}`, c.reference||'', c.color||'', c.colorCode||'', c.units,
+        ...sizeLabels.map(l=>smap[l]||null),
+        c.ctnReal||null, c.ctnSmall, c.totPcs, r2(c.nwPer), r2(c.gwPer), r2(c.ttlNw), r2(c.ttlGw), dimCm(c.dim), c.note||'']);
+    });
+    const tR=cartons.reduce((s,c)=>s+c.ctnReal,0), tS=cartons.reduce((s,c)=>s+c.ctnSmall,0), tP=cartons.reduce((s,c)=>s+c.totPcs,0);
+    const totRow=['TOTAL','','','','',...sizeLabels.map(()=>null),tR,tS,tP,null,null,r2(cartons.reduce((s,c)=>s+c.ttlNw,0)),r2(cartons.reduce((s,c)=>s+c.ttlGw,0)),'',''];
+    const rr=ws.addRow(totRow); rr.font={bold:true};
   });
 }
 
