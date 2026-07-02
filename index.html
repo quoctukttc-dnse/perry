@@ -125,8 +125,8 @@
         <p><b>Nguồn dữ liệu:</b> app ưu tiên sheet <code>Delivery list</code>, nếu không có thì dùng <code>hang</code>, tự bỏ qua các dòng subtotal (dòng không có Reference/Order). Cột được nhận diện theo <b>tên trong header</b> nên chạy được cả file gốc (không có cột CO FORM) lẫn file đã xử lý.</p>
         <p><b>Invoice:</b> PO←Order, Reference, Color, Carton←CTNs real, Carton Small←CTNs small, Quantity←Qty real, PLID. Amount = Quantity × Unit price (công thức Excel). Gender / Composition / Unit price / CO FORM để trống.</p>
         <p><b>Packing List:</b> gom theo PO, so Σ CTNs real vs Σ CTNs small để chọn form. Chi tiết carton đọc từ sheet cùng tên PO; với PO chênh, tách thùng có ghi chú (ODD CARTON / Small box / Master box) sang phần IRREGULAR, còn lại là SOLID.</p>
-        <p><b>Xuất file:</b> app nạp <code>template.xlsx</code> (file Form gốc, đặt cùng thư mục với index.html) rồi điền dữ liệu — giữ nguyên font/border/merge. Sheet <b>INVOICE 94</b> và <b>packinglist</b> đã đúng định dạng gốc. Các sheet chi tiết per-PO (SOLID/IRREGULAR/PLS) hiện xuất dạng bảng dữ liệu (PKL_Data + PL &lt;PO&gt;) — <b>Giai đoạn 2</b> sẽ dựng đúng layout mẫu.</p>
-        <p class="blank">⚠️ packinglist đang gộp theo Reference (tạm) — cần bạn xác nhận quy tắc gộp đúng.</p>
+        <p><b>Xuất file:</b> app nạp <code>template.xlsx</code> (file Form gốc, đặt cùng thư mục với index.html) rồi điền dữ liệu — giữ nguyên font/border/merge/layout. Điền đầy đủ: <b>INVOICE 94</b>, <b>packinglist</b>, và từng sheet chi tiết theo PO đúng template — form thường (<code>&lt;PO&gt;</code> + <code>PLS &lt;PO&gt;</code>), form chênh (<code>SOLID PL</code> + <code>IRREGULAR SS PL</code>, cùng danh sách thùng, khác cột đếm real/small). Sheet của PO không có trong file gút hàng sẽ bị xoá.</p>
+        <p class="blank">Ghi chú: packinglist gộp theo Reference; INVOICE NO lấy từ số trong tên file gút hàng (nếu có).</p>
       </div>
     </details>
   </div>
@@ -271,37 +271,41 @@ function parseStyleSheet(wb, po){
     if(lab!=null && lab!=='') sizeCols.push({c, label:String(lab).replace('.0','').trim()});
   }
   const C={caseFrom:0,caseTo:1,style:2,color:3,ccode:4,units:5,totCtn:16,totPcs:17,vol:18,nw:19,gw:20,note:21,L:22,W:23,H:24};
-  const cartons=[]; let curRef=null,curColor=null,curCode=null;
+  const items=[]; let curRef=null,curColor=null,curCode=null;
   const usedLabels=new Set();
   for(let i=hr+2;i<rows.length;i++){
     const r=rows[i];
     const first=r[C.caseFrom];
     if(norm(r[15])==='total') break;
     if(typeof first==='string' && norm(first).includes('packing list')) break;
-    if(typeof first!=='number') continue; // bỏ dòng subtotal/master box/ghi chú
-    if(typeof r[C.style]==='string' && r[C.style].trim()){ curRef=r[C.style].trim(); curColor=(r[C.color]||'').toString().trim(); curCode=(r[C.ccode]!=null?String(r[C.ccode]).trim():''); }
-    else{ if(typeof r[C.color]==='string' && r[C.color].trim()) curColor=r[C.color].trim(); if(r[C.ccode]!=null && String(r[C.ccode]).trim()) curCode=String(r[C.ccode]).trim(); }
-    const sizes = sizeCols.map(s=>({label:s.label, qty:num(r[s.c])})).filter(s=>s.qty>0);
-    sizes.forEach(s=>usedLabels.add(s.label));
-    const note = (r[C.note]||'').toString().trim();
-    const totCtn=num(r[C.totCtn]);           // = CTN real (đã gộp master box)
-    const totPcs=num(r[C.totPcs]);
-    const ctnSmall = totCtn>0 ? totCtn : (totPcs>0 ? 1 : 0); // thùng lẻ đếm riêng
-    const ttlNw=num(r[C.nw]), ttlGw=num(r[C.gw]); // gút lưu TTL NW/GW cho cả dòng
-    cartons.push({
-      from:num(first), to:num(r[C.caseTo]), reference:curRef, color:curColor, colorCode:curCode,
-      units:num(r[C.units]), sizes,
-      ctnReal:totCtn, ctnSmall, totPcs,
-      vol:num(r[C.vol]),
-      nwPer: totCtn>0?ttlNw/totCtn:ttlNw, gwPer: totCtn>0?ttlGw/totCtn:ttlGw,
-      ttlNw, ttlGw, note,
-      dim:[num(r[C.L]),num(r[C.W]),num(r[C.H])],
-      irregular: !!note
-    });
+    if(typeof first==='number'){ // dòng carton
+      if(typeof r[C.style]==='string' && r[C.style].trim()){ curRef=r[C.style].trim(); curColor=(r[C.color]||'').toString().trim(); curCode=(r[C.ccode]!=null?String(r[C.ccode]).trim():''); }
+      else{ if(typeof r[C.color]==='string' && r[C.color].trim()) curColor=r[C.color].trim(); if(r[C.ccode]!=null && String(r[C.ccode]).trim()) curCode=String(r[C.ccode]).trim(); }
+      const sizes = sizeCols.map(s=>({label:s.label, qty:num(r[s.c])})).filter(s=>s.qty>0);
+      sizes.forEach(s=>usedLabels.add(s.label));
+      const totCtn=num(r[C.totCtn]), totPcs=num(r[C.totPcs]);
+      const ttlNw=num(r[C.nw]), ttlGw=num(r[C.gw]);
+      items.push({ type:'carton',
+        from:num(first), to:num(r[C.caseTo]), reference:curRef, color:curColor, colorCode:curCode,
+        units:num(r[C.units]), sizes,
+        ctnReal:totCtn, ctnSmall: totCtn>0?totCtn:(totPcs>0?1:0), totPcs, vol:num(r[C.vol]),
+        nwPer: totCtn>0?ttlNw/totCtn:ttlNw, gwPer: totCtn>0?ttlGw/totCtn:ttlGw, ttlNw, ttlGw,
+        note:(r[C.note]||'').toString().trim(), dim:[num(r[C.L]),num(r[C.W]),num(r[C.H])], irregular: !!(r[C.note]) });
+    } else if(typeof first==='string' && first.trim() && !/^0x/.test(first)){ // dòng ghi chú (Master box...)
+      items.push({ type:'note', text:first.trim(), remark:(r[C.note]||'').toString().trim(), dim:[num(r[C.L]),num(r[C.W]),num(r[C.H])] });
+    }
   }
-  // thứ tự size theo header, chỉ giữ size có dùng
   const sizeLabels = sizeCols.map(s=>s.label).filter(l=>usedLabels.has(l));
-  return {cartons, sizeLabels};
+  // gom nhóm theo ref+color (giữ thứ tự); size cộng theo SỐ THÙNG vật lý (to-from+1)
+  const gmap={}, gorder=[];
+  items.filter(x=>x.type==='carton').forEach(c=>{
+    const k=c.reference+'|'+c.color;
+    if(!gmap[k]){ gmap[k]={ref:c.reference,color:c.color,code:c.colorCode,real:0,small:0,pcs:0,gw:0,nw:0,vol:0,sizes:{}}; gorder.push(k); }
+    const g=gmap[k], mult=Math.max(1,(c.to||c.from)-c.from+1);
+    g.real+=c.ctnReal; g.small+=c.ctnSmall; g.pcs+=c.totPcs; g.gw+=c.ttlGw; g.nw+=c.ttlNw; g.vol+=c.vol;
+    c.sizes.forEach(s=>g.sizes[s.label]=(g.sizes[s.label]||0)+s.qty*mult);
+  });
+  return {items, cartons:items.filter(x=>x.type==='carton'), sizeLabels, groups:gorder.map(k=>gmap[k])};
 }
 
 /* ============ Helpers ============ */
@@ -412,10 +416,11 @@ async function exportXlsx(){
     const buf=await fetch(TEMPLATE_URL).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer();});
     const wb=new ExcelJS.Workbook();
     await wb.xlsx.load(buf);
+    const invNo=(String(STATE.fname||'').match(/\d{6,8}/)||[])[0];
     fillInvoice(wb, STATE.lines);
     fillPackingSummary(wb, STATE.lines);
-    cleanupSheets(wb);          // bỏ các sheet chi tiết cũ (sẽ làm ở GĐ2)
-    appendDataSheets(wb, STATE);// dữ liệu PKL dạng bảng (tạm) để dùng ngay
+    fillDetailSheets(wb, STATE, invNo?Number(invNo):null); // GĐ2: điền các sheet chi tiết đúng template
+    cleanupSheets(wb, STATE);   // bỏ sheet thừa (PO không có + sheet rác)
     const out=await wb.xlsx.writeBuffer();
     const base=(STATE.fname||'gut_hang').replace(/\.(xlsb|xlsx|xls)$/i,'');
     downloadBlob(new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), `INV_PKL_${base}.xlsx`);
@@ -482,41 +487,128 @@ function fillPackingSummary(wb, L){
   t.getCell('F').value={formula:`SUM(F${start}:F${end})`};
 }
 
-function cleanupSheets(wb){
-  const keep=new Set([T_INV.sheet.toLowerCase(), T_PKL.sheet.toLowerCase()]);
-  wb.worksheets.slice().forEach(ws=>{ if(!keep.has(ws.name.toLowerCase())) wb.removeWorksheet(ws.id); });
+/* ==== GĐ2: điền các sheet chi tiết vào ĐÚNG template (giữ layout/font) ==== */
+const clone=o=>o?JSON.parse(JSON.stringify(o)):o;
+function nns(s){ return norm(s).replace(/\s+/g,''); } // norm không dấu cách
+function findSheet(wb, pred){ return wb.worksheets.find(ws=>pred(ws.name)); }
+function stripFormulas(ws){ ws.eachRow({includeEmpty:false},row=>row.eachCell({includeEmpty:false},cell=>{ const v=cell.value; if(v&&typeof v==='object'&&('formula'in v||'sharedFormula'in v)) cell.value=(v.result!==undefined?v.result:null); })); }
+function findRowIn(ws, pred, maxR){ maxR=maxR||80; for(let r=1;r<=maxR;r++){ if(pred(ws.getRow(r))) return r; } return -1; }
+function capRow(ws,r,maxC){ const st=[]; for(let c=1;c<=maxC;c++) st[c]=clone(ws.getCell(r,c).style); return {st,h:ws.getRow(r).height}; }
+function putRow(ws,r,cp,maxC){ if(cp.h)ws.getRow(r).height=cp.h; for(let c=1;c<=maxC;c++) ws.getCell(r,c).style=clone(cp.st[c]); }
+function setC(ws,r,c,v){ ws.getCell(r,c).value=(v===''||v==null?null:v); }
+function colL(c){ let s=''; while(c>0){ s=String.fromCharCode(65+(c-1)%26)+s; c=Math.floor((c-1)/26);} return s; }
+function cleanColor(c){ return (c||'').replace(/^\d+\s+/,'').trim(); }
+function readSizeCols(ws,hr,a,b){ const o=[]; for(let c=a;c<=b;c++){ const v=ws.getCell(hr,c).value; if(v!=null&&v!=='') o.push({col:c,label:String(v).replace('.0','')}); } return o; }
+function mapSizes(sizeLabels, tCols){ const m={}; if(!sizeLabels.length||!tCols.length) return m; let a=tCols.findIndex(t=>norm(t.label)===norm(sizeLabels[0])); if(a<0)a=0; sizeLabels.forEach((l,i)=>{ const t=tCols[a+i]; if(t)m[l]=t.col; }); return m; }
+
+function fillChenh(ws, detail, order, useSmall, invNo){
+  const {items, sizeLabels, groups}=detail; stripFormulas(ws);
+  const hr=findRowIn(ws, row=>norm(row.getCell(1).value)==='case from-to'); if(hr<0) return;
+  const tSize=readSizeCols(ws,hr,9,16), smap=mapSizes(sizeLabels,tSize);
+  const sumHdr=findRowIn(ws, row=>norm(row.getCell(4).value)==='customer po', 200);
+  let gt=-1; for(let r=sumHdr-1;r>hr;r--){ const q=ws.getCell(r,17).value; if(q!=null&&q!==''){gt=r;break;} }
+  let totRow=-1; for(let r=sumHdr+1;r<sumHdr+40;r++){ const q=ws.getCell(r,17).value; if(q&&typeof q==='object'&&q.formula){totRow=r;break;} }
+  const sSize=readSizeCols(ws,sumHdr,8,16), ssmap=mapSizes(sizeLabels,sSize);
+  const cartonSt=capRow(ws,hr+1,29), gtSt=capRow(ws,gt,29), sumHdrSt=capRow(ws,sumHdr,29), sumRowSt=capRow(ws,sumHdr+1,29), totSt=capRow(ws,totRow>0?totRow:sumHdr+1,29);
+  let noteIdx=-1; for(let r=hr+1;r<gt;r++){ const a=ws.getCell(r,1).value; if(typeof a==='string'&&a.trim()){noteIdx=r;break;} }
+  const noteSt=noteIdx>0?capRow(ws,noteIdx,29):cartonSt;
+  setC(ws,13,2,order); setC(ws,14,5,order); if(invNo)setC(ws,15,4,invNo);
+  const clearTo=Math.max(ws.rowCount,hr+items.length+groups.length+14);
+  for(let rr=hr+1;rr<=clearTo;rr++)for(let c=1;c<=29;c++) ws.getCell(rr,c).value=null;
+  let r=hr+1; const first=r;
+  items.forEach(it=>{
+    if(it.type==='note'){ putRow(ws,r,noteSt,29); setC(ws,r,1,it.text); setC(ws,r,4,it.remark); r++; return; }
+    putRow(ws,r,cartonSt,29);
+    setC(ws,r,1,it.from); setC(ws,r,3,it.to); setC(ws,r,4,it.note); setC(ws,r,5,it.reference); setC(ws,r,6,it.color); setC(ws,r,7,it.colorCode); setC(ws,r,8,it.units);
+    it.sizes.forEach(s=>{ if(smap[s.label])setC(ws,r,smap[s.label],s.qty); });
+    setC(ws,r,17, (useSmall?it.ctnSmall:it.ctnReal)||null); setC(ws,r,18,it.totPcs);
+    setC(ws,r,19,r2(it.nwPer)); setC(ws,r,20,r2(it.gwPer)); setC(ws,r,21,r2(it.ttlNw)); setC(ws,r,22,r2(it.ttlGw)); setC(ws,r,23,dimCm(it.dim));
+    setC(ws,r,24,it.dim[0]); setC(ws,r,25,it.dim[1]); setC(ws,r,26,it.dim[2]);
+    setC(ws,r,27,r2(it.dim[0]*2.54)); setC(ws,r,28,r2(it.dim[1]*2.54)); setC(ws,r,29,r2(it.dim[2]*2.54)); r++;
+  });
+  const lastData=r-1; putRow(ws,r,gtSt,29);
+  tSize.forEach(t=>setC(ws,r,t.col,{formula:`SUM(${colL(t.col)}${first}:${colL(t.col)}${lastData})`}));
+  setC(ws,r,17,{formula:`SUM(Q${first}:Q${lastData})`}); setC(ws,r,18,{formula:`SUM(R${first}:R${lastData})`});
+  setC(ws,r,21,{formula:`SUM(U${first}:U${lastData})`}); setC(ws,r,22,{formula:`SUM(V${first}:V${lastData})`});
+  r+=2; putRow(ws,r,sumHdrSt,29);
+  setC(ws,r,4,'CUSTOMER PO'); setC(ws,r,5,'Style'); setC(ws,r,6,'Color'); setC(ws,r,7,'Color Code');
+  sSize.forEach(t=>setC(ws,r,t.col,t.label)); setC(ws,r,17,'TOT CTNS'); setC(ws,r,18,'TOT PCS'); r++;
+  const sFirst=r;
+  groups.forEach(g=>{ putRow(ws,r,sumRowSt,29); setC(ws,r,4,order); setC(ws,r,5,g.ref); setC(ws,r,6,cleanColor(g.color)); setC(ws,r,7,g.code);
+    Object.keys(g.sizes).forEach(l=>{ if(ssmap[l])setC(ws,r,ssmap[l],g.sizes[l]); });
+    setC(ws,r,17, useSmall?g.small:g.real); setC(ws,r,18,g.pcs); r++; });
+  putRow(ws,r,totSt,29); setC(ws,r,16,'TOTAL'); setC(ws,r,17,{formula:`SUM(Q${sFirst}:Q${r-1})`}); setC(ws,r,18,{formula:`SUM(R${sFirst}:R${r-1})`});
 }
 
-function appendDataSheets(wb, S){
-  const {lines:L, pos:P}=S;
-  // FormMap
-  const mp=wb.addWorksheet('PKL_FormMap');
-  mp.addRow(['PO','Sum CTNs real','Sum CTNs small','Form','Sheet 1','Sheet 2','Qty','N.W','G.W','Vol(m3)']);
-  P.forEach(p=>mp.addRow([p.order,r2(p.real),r2(p.small),p.form==='THUONG'?'THUONG':'CHENH',p.sheets[0],p.sheets[1],r2(p.qty),r2(p.nw),r2(p.gw),r3(p.vol)]));
-  mp.getRow(1).font={bold:true};
-  // Summary theo dòng
-  const sm=wb.addWorksheet('PKL_Data');
-  sm.addRow(['PO','Reference','Color','Quantity','Carton','Carton Small','N.W (kg)','G.W (kg)','Vol (m3)','PLID']);
-  L.forEach(l=>sm.addRow([l.order,l.reference,l.color||'',(l.qtyReal||l.qty),l.ctnReal,l.ctnSmall,r2(l.nw),r2(l.gw),r3(l.vol),l.plid!=null?l.plid:'']));
-  sm.getRow(1).font={bold:true};
-  // Chi tiết carton từng PO (tất cả thùng; đúng tổng pcs)
-  P.forEach(p=>{
-    if(!p.detail) return;
-    const {cartons, sizeLabels}=p.detail;
-    const ws=wb.addWorksheet(('PL '+p.order).substring(0,31));
-    ws.addRow([`PACKING LIST DETAIL — ${p.order} (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})  → ${p.sheets.join(' + ')}`]);
-    ws.addRow([]);
-    const header=['Case','Reference','Color','Color code','Units/case',...sizeLabels,'CTN real','CTN small','TOT PCS','NW','GW','TTL NW','TTL GW','Carton size (cm)','Remark'];
-    ws.addRow(header); ws.getRow(3).font={bold:true};
-    cartons.forEach(c=>{
-      const smap={}; c.sizes.forEach(s=>smap[s.label]=s.qty);
-      ws.addRow([c.from===c.to?c.from:`${c.from}-${c.to}`, c.reference||'', c.color||'', c.colorCode||'', c.units,
-        ...sizeLabels.map(l=>smap[l]||null),
-        c.ctnReal||null, c.ctnSmall, c.totPcs, r2(c.nwPer), r2(c.gwPer), r2(c.ttlNw), r2(c.ttlGw), dimCm(c.dim), c.note||'']);
-    });
-    const tR=cartons.reduce((s,c)=>s+c.ctnReal,0), tS=cartons.reduce((s,c)=>s+c.ctnSmall,0), tP=cartons.reduce((s,c)=>s+c.totPcs,0);
-    const totRow=['TOTAL','','','','',...sizeLabels.map(()=>null),tR,tS,tP,null,null,r2(cartons.reduce((s,c)=>s+c.ttlNw,0)),r2(cartons.reduce((s,c)=>s+c.ttlGw,0)),'',''];
-    const rr=ws.addRow(totRow); rr.font={bold:true};
+function fillNormal(ws, detail, order){
+  const {items, sizeLabels}=detail; stripFormulas(ws);
+  const H=findRowIn(ws, row=>norm(row.getCell(1).value)==='style'); if(H<0) return;
+  const tSize=readSizeCols(ws,H,7,11), smap=mapSizes(sizeLabels,tSize);
+  const cartonSt=capRow(ws,H+1,22);
+  let subIdx=-1; for(let r=H+1;r<H+120;r++){ const a=ws.getCell(r,1).value,l=ws.getCell(r,12).value; if((a==null||a==='')&&l!=null&&l!==''){subIdx=r;break;} }
+  const subSt=subIdx>0?capRow(ws,subIdx,22):cartonSt;
+  let grand=-1; for(let r=H+120;r>H;r--){ const a=ws.getCell(r,1).value,l=ws.getCell(r,12).value; if((a==null||a==='')&&l!=null&&l!==''){grand=r;break;} }
+  const grSt=grand>0?capRow(ws,grand,22):subSt;
+  const byG={}, order2=[]; items.filter(x=>x.type==='carton').forEach(c=>{const k=c.reference+'|'+c.color; if(!byG[k]){byG[k]=[];order2.push(k);} byG[k].push(c);});
+  const totReal=order2.reduce((s,k)=>s+byG[k].reduce((a,c)=>a+c.ctnReal,0),0);
+  setC(ws,6,2,order); setC(ws,7,2,totReal);
+  const clearTo=Math.max(ws.rowCount,H+items.length+order2.length+8);
+  for(let rr=H+1;rr<=clearTo;rr++)for(let c=1;c<=22;c++) ws.getCell(rr,c).value=null;
+  let r=H+1, gC=0,gP=0,gG=0;
+  order2.forEach(k=>{ const cs=byG[k], f=r;
+    cs.forEach(c=>{ putRow(ws,r,cartonSt,22); setC(ws,r,1,c.reference); setC(ws,r,2,c.color); setC(ws,r,3,c.colorCode); setC(ws,r,4,c.from); setC(ws,r,5,c.to); setC(ws,r,6,c.units);
+      c.sizes.forEach(s=>{ if(smap[s.label])setC(ws,r,smap[s.label],s.qty); });
+      setC(ws,r,12,c.ctnReal||null); setC(ws,r,13,c.totPcs); setC(ws,r,14,r2(c.gwPer)); setC(ws,r,15,dimCm(c.dim));
+      setC(ws,r,16,c.dim[0]);setC(ws,r,17,c.dim[1]);setC(ws,r,18,c.dim[2]); setC(ws,r,19,r2(c.dim[0]*2.54));setC(ws,r,20,r2(c.dim[1]*2.54));setC(ws,r,21,r2(c.dim[2]*2.54)); r++; });
+    const sgw=cs.reduce((a,c)=>a+c.ttlGw,0);
+    putRow(ws,r,subSt,22); setC(ws,r,12,{formula:`SUM(L${f}:L${r-1})`}); setC(ws,r,13,{formula:`SUM(M${f}:M${r-1})`}); setC(ws,r,14,r2(sgw)); r++;
+    gC+=cs.reduce((a,c)=>a+c.ctnReal,0); gP+=cs.reduce((a,c)=>a+c.totPcs,0); gG+=sgw; });
+  putRow(ws,r,grSt,22); setC(ws,r,12,gC); setC(ws,r,13,gP); setC(ws,r,14,r2(gG));
+}
+
+function fillPLS(ws, detail, order){
+  const {sizeLabels, groups}=detail; stripFormulas(ws);
+  const H=findRowIn(ws, row=>norm(row.getCell(1).value)==='style'); if(H<0) return;
+  const tSize=readSizeCols(ws,H,4,8), smap=mapSizes(sizeLabels,tSize);
+  const totRow=findRowIn(ws, row=>norm(row.getCell(1).value)==='total', 60);
+  const dataSt=capRow(ws,H+1,10), totSt=totRow>0?capRow(ws,totRow,10):dataSt;
+  const totReal=groups.reduce((s,g)=>s+g.real,0);
+  setC(ws,4,2,order); setC(ws,5,2,totReal);
+  const oldTot=totRow>0?totRow:H+1+groups.length;
+  for(let rr=H+1;rr<=oldTot+1;rr++)for(let c=1;c<=10;c++) ws.getCell(rr,c).value=null;
+  let r=H+1; const f=r;
+  groups.forEach(g=>{ putRow(ws,r,dataSt,10); setC(ws,r,1,g.ref); setC(ws,r,2,cleanColor(g.color)); setC(ws,r,3,g.code);
+    Object.keys(g.sizes).forEach(l=>{ if(smap[l])setC(ws,r,smap[l],g.sizes[l]); }); setC(ws,r,9,g.real); setC(ws,r,10,g.pcs); r++; });
+  putRow(ws,r,totSt,10); setC(ws,r,1,'TOTAL'); setC(ws,r,9,{formula:`SUM(I${f}:I${r-1})`}); setC(ws,r,10,{formula:`SUM(J${f}:J${r-1})`});
+}
+
+function fillDetailSheets(wb, S, invNo){
+  S.pos.forEach(p=>{
+    if(!p.detail || !p.detail.items.length) return;
+    if(p.form==='CHENH'){
+      const solid=findSheet(wb, n=>nns(n)==='solidpl'+nns(p.order));
+      const irr=findSheet(wb, n=>nns(n).includes('irregular') && nns(n).includes(nns(p.order)));
+      if(solid) fillChenh(solid, p.detail, p.order, false, invNo);
+      if(irr)   fillChenh(irr,   p.detail, p.order, true,  invNo);
+    }else{
+      const main=findSheet(wb, n=>nns(n)===nns(p.order));
+      const pls=findSheet(wb, n=>nns(n)==='pls'+nns(p.order));
+      if(main) fillNormal(main, p.detail, p.order);
+      if(pls)  fillPLS(pls, p.detail, p.order);
+    }
+  });
+}
+
+function cleanupSheets(wb, S){
+  const keep=new Set([nns(T_INV.sheet), nns(T_PKL.sheet)]);
+  const poKeys=new Set(S.pos.map(p=>nns(p.order)));
+  wb.worksheets.slice().forEach(ws=>{
+    const nn=nns(ws.name);
+    if(keep.has(nn)) return;
+    // giữ nếu là sheet chi tiết của 1 PO có trong dữ liệu
+    let isPODetail=false;
+    S.pos.forEach(p=>{ const k=nns(p.order); if(nn===k||nn==='pls'+k||nn==='solidpl'+k||(nn.includes('irregular')&&nn.includes(k))) isPODetail=true; });
+    if(!isPODetail) wb.removeWorksheet(ws.id);
   });
 }
 
