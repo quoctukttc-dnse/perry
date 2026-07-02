@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tạo INV & PKL từ file Gút hàng</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   :root{
     --bg:#0f172a; --panel:#1e293b; --panel2:#334155; --line:#475569;
@@ -56,7 +57,7 @@
 <body>
 <header>
   <h1>Tạo INV &amp; PKL từ file Gút hàng</h1>
-  <p>Upload file gút hàng (.xlsb / .xlsx) → tự động sinh Invoice &amp; Packing List. Các trường Unit price / Gender / Composition / CO FORM để trống (điền sau).</p>
+  <p>Upload file gút hàng (.xlsb / .xlsx) → sinh Invoice &amp; Packing List <b>giữ nguyên layout/font</b> theo file Form gốc (template.xlsx). Unit price / Gender / Composition / CO FORM để trống (điền sau).</p>
 </header>
 
 <div class="wrap">
@@ -124,6 +125,8 @@
         <p><b>Nguồn dữ liệu:</b> app ưu tiên sheet <code>Delivery list</code>, nếu không có thì dùng <code>hang</code>, tự bỏ qua các dòng subtotal (dòng không có Reference/Order). Cột được nhận diện theo <b>tên trong header</b> nên chạy được cả file gốc (không có cột CO FORM) lẫn file đã xử lý.</p>
         <p><b>Invoice:</b> PO←Order, Reference, Color, Carton←CTNs real, Carton Small←CTNs small, Quantity←Qty real, PLID. Amount = Quantity × Unit price (công thức Excel). Gender / Composition / Unit price / CO FORM để trống.</p>
         <p><b>Packing List:</b> gom theo PO, so Σ CTNs real vs Σ CTNs small để chọn form. Chi tiết carton đọc từ sheet cùng tên PO; với PO chênh, tách thùng có ghi chú (ODD CARTON / Small box / Master box) sang phần IRREGULAR, còn lại là SOLID.</p>
+        <p><b>Xuất file:</b> app nạp <code>template.xlsx</code> (file Form gốc, đặt cùng thư mục với index.html) rồi điền dữ liệu — giữ nguyên font/border/merge. Sheet <b>INVOICE 94</b> và <b>packinglist</b> đã đúng định dạng gốc. Các sheet chi tiết per-PO (SOLID/IRREGULAR/PLS) hiện xuất dạng bảng dữ liệu (PKL_Data + PL &lt;PO&gt;) — <b>Giai đoạn 2</b> sẽ dựng đúng layout mẫu.</p>
+        <p class="blank">⚠️ packinglist đang gộp theo Reference (tạm) — cần bạn xác nhận quy tắc gộp đúng.</p>
       </div>
     </details>
   </div>
@@ -380,75 +383,126 @@ function renderPklDetail(po){
   box.innerHTML=html;
 }
 
-/* ============ Export xlsx ============ */
-function exportXlsx(){
-  const {lines:L, pos:P} = STATE;
-  const wb = XLSX.utils.book_new();
+/* ============ Export xlsx (ExcelJS + template, giữ nguyên định dạng) ============ */
+const TEMPLATE_URL='template.xlsx';
+// Hằng số vị trí trong template Form
+const T_INV={sheet:'INVOICE 94', dataStart:29, tmplRows:43, totOffset:74-(29+43-1)}; // totRow=end+totOffset
+const T_PKL={sheet:'packinglist', dataStart:23, tmplRows:11, totOffset:35-(23+11-1)};
 
-  /* ---- INVOICE ---- */
-  const aoa=[
-    ['COMMERCIAL INVOICE'],[],
-    ['PO','Reference','Color','Gender','Composition','Carton','Carton Small','Quantity','Unit price (USD)','Amount (USD)','PLID','CO FORM']
-  ];
-  const first=4; // hàng dữ liệu đầu (1-based excel) = 4
+async function exportXlsx(){
+  const btn=document.getElementById('btnExport');
+  btn.disabled=true; const old=btn.textContent; btn.textContent='Đang tạo file...';
+  try{
+    const buf=await fetch(TEMPLATE_URL).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer();});
+    const wb=new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    fillInvoice(wb, STATE.lines);
+    fillPackingSummary(wb, STATE.lines);
+    cleanupSheets(wb);          // bỏ các sheet chi tiết cũ (sẽ làm ở GĐ2)
+    appendDataSheets(wb, STATE);// dữ liệu PKL dạng bảng (tạm) để dùng ngay
+    const out=await wb.xlsx.writeBuffer();
+    const base=(STATE.fname||'gut_hang').replace(/\.(xlsb|xlsx|xls)$/i,'');
+    downloadBlob(new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), `INV_PKL_${base}.xlsx`);
+  }catch(err){
+    console.error(err);
+    alert('Lỗi tạo file: '+err.message+
+      (/fetch|HTTP/.test(err.message)?'\n\nKhông tải được template.xlsx. Hãy đảm bảo file template.xlsx nằm cùng thư mục với index.html trên GitHub Pages.':''));
+  }finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+function fillInvoice(wb, L){
+  const ws=wb.getWorksheet(T_INV.sheet); if(!ws) return;
+  const need=L.length, have=T_INV.tmplRows, start=T_INV.dataStart;
+  if(need>have) ws.duplicateRow(start, need-have, true);
+  else if(need<have) ws.spliceRows(start, have-need);
+  const end=start+need-1;
   L.forEach((l,i)=>{
-    const rIdx=first+i;
-    aoa.push([l.order,l.reference,l.color||'','','',
-      l.ctnReal,l.ctnSmall,(l.qtyReal||l.qty),'',
-      {t:'n',f:`H${rIdx}*I${rIdx}`}, l.plid!=null?l.plid:'', '']);
+    const rr=start+i, r=ws.getRow(rr);
+    r.getCell('A').value=l.order;
+    r.getCell('B').value=l.reference;
+    r.getCell('C').value=l.color||'';
+    r.getCell('D').value=null;                 // GENDER (trống)
+    r.getCell('E').value=null;                 // Composition (trống)
+    r.getCell('H').value=l.ctnReal;
+    r.getCell('I').value=l.ctnSmall;
+    r.getCell('J').value=(l.qtyReal||l.qty);
+    r.getCell('K').value=null;                 // Unit price (trống)
+    r.getCell('M').value={formula:`J${rr}*K${rr}`, result:0}; // Amount = Qty * Unit price
+    r.getCell('N').value=(l.plid!=null?l.plid:null);
+    r.getCell('O').value=null;                 // CO FORM (trống)
   });
-  const last=first+L.length-1;
-  aoa.push(['TOTAL','','','','',
-    {t:'n',f:`SUM(F${first}:F${last})`},{t:'n',f:`SUM(G${first}:G${last})`},
-    {t:'n',f:`SUM(H${first}:H${last})`},'',{t:'n',f:`SUM(J${first}:J${last})`},'','']);
-  const inv=XLSX.utils.aoa_to_sheet(aoa);
-  inv['!cols']=[{wch:8},{wch:12},{wch:14},{wch:8},{wch:26},{wch:8},{wch:11},{wch:10},{wch:13},{wch:13},{wch:12},{wch:9}];
-  XLSX.utils.book_append_sheet(wb,inv,'INVOICE');
+  const totRow=end+T_INV.totOffset;
+  const t=ws.getRow(totRow);
+  t.getCell('H').value={formula:`SUM(H${start}:H${end})`};
+  t.getCell('I').value={formula:`SUM(I${start}:I${end})`};
+  t.getCell('J').value={formula:`SUM(J${start}:J${end})`};
+  t.getCell('M').value={formula:`SUM(M${start}:M${end})`};
+}
 
-  /* ---- PKL_FormMap ---- */
-  const mapAoa=[['PO','Sum CTNs real','Sum CTNs small','Form','Sheet 1','Sheet 2','Qty','N.W','G.W','Vol(m3)']];
-  P.forEach(p=>mapAoa.push([p.order,r2(p.real),r2(p.small),
-    p.form==='THUONG'?'THUONG':'CHENH',p.sheets[0],p.sheets[1],
-    r2(p.qty),r2(p.nw),r2(p.gw),r3(p.vol)]));
-  const mp=XLSX.utils.aoa_to_sheet(mapAoa);
-  mp['!cols']=[{wch:8},{wch:14},{wch:15},{wch:9},{wch:18},{wch:22},{wch:9},{wch:9},{wch:9},{wch:10}];
-  XLSX.utils.book_append_sheet(wb,mp,'PKL_FormMap');
+function fillPackingSummary(wb, L){
+  const ws=wb.getWorksheet(T_PKL.sheet); if(!ws) return;
+  // gom theo Reference (tạm) — Qty, G.W, Measurement
+  const g={}; const order=[];
+  L.forEach(l=>{ const k=l.reference;
+    if(!g[k]){g[k]={ref:k,qty:0,gw:0,vol:0};order.push(k);}
+    g[k].qty+=(l.qtyReal||l.qty); g[k].gw+=l.gw; g[k].vol+=l.vol; });
+  const rows=order.map(k=>g[k]);
+  const need=rows.length, have=T_PKL.tmplRows, start=T_PKL.dataStart;
+  // Chỉ chèn thêm dòng nếu nhiều hơn template (giữ cột nhãn "shipping marks" bên trái không xê dịch)
+  if(need>have) ws.duplicateRow(start, need-have, true);
+  const total=Math.max(need,have), end=start+total-1;
+  for(let i=0;i<total;i++){
+    const r=ws.getRow(start+i), x=rows[i];
+    r.getCell('B').value=x?x.ref:null;
+    r.getCell('C').value=x?'SWIMWEAR':null;
+    r.getCell('D').value=x?x.qty:null;
+    r.getCell('E').value=x?r2(x.gw):null;
+    r.getCell('F').value=x?r3(x.vol):null;
+  }
+  const totRow=end+T_PKL.totOffset;
+  const t=ws.getRow(totRow);
+  t.getCell('D').value={formula:`SUM(D${start}:D${end})`};
+  t.getCell('E').value={formula:`SUM(E${start}:E${end})`};
+  t.getCell('F').value={formula:`SUM(F${start}:F${end})`};
+}
 
-  /* ---- PKL_Summary (theo reference) ---- */
-  const sumAoa=[['PACKING LIST — SUMMARY'],[],
-    ['PO','Reference','Color','Quantity','Cartons','N.W (kg)','G.W (kg)','Vol (m3)']];
-  L.forEach(l=>sumAoa.push([l.order,l.reference,l.color||'',
-    (l.qtyReal||l.qty),l.ctnReal,r2(l.nw),r2(l.gw),r3(l.vol)]));
-  const sm=XLSX.utils.aoa_to_sheet(sumAoa);
-  sm['!cols']=[{wch:8},{wch:12},{wch:14},{wch:10},{wch:9},{wch:10},{wch:10},{wch:10}];
-  XLSX.utils.book_append_sheet(wb,sm,'PKL_Summary');
+function cleanupSheets(wb){
+  const keep=new Set([T_INV.sheet.toLowerCase(), T_PKL.sheet.toLowerCase()]);
+  wb.worksheets.slice().forEach(ws=>{ if(!keep.has(ws.name.toLowerCase())) wb.removeWorksheet(ws.id); });
+}
 
-  /* ---- Chi tiết carton từng PO ---- */
+function appendDataSheets(wb, S){
+  const {lines:L, pos:P}=S;
+  // FormMap
+  const mp=wb.addWorksheet('PKL_FormMap');
+  mp.addRow(['PO','Sum CTNs real','Sum CTNs small','Form','Sheet 1','Sheet 2','Qty','N.W','G.W','Vol(m3)']);
+  P.forEach(p=>mp.addRow([p.order,r2(p.real),r2(p.small),p.form==='THUONG'?'THUONG':'CHENH',p.sheets[0],p.sheets[1],r2(p.qty),r2(p.nw),r2(p.gw),r3(p.vol)]));
+  mp.getRow(1).font={bold:true};
+  // Summary theo dòng
+  const sm=wb.addWorksheet('PKL_Data');
+  sm.addRow(['PO','Reference','Color','Quantity','Carton','Carton Small','N.W (kg)','G.W (kg)','Vol (m3)','PLID']);
+  L.forEach(l=>sm.addRow([l.order,l.reference,l.color||'',(l.qtyReal||l.qty),l.ctnReal,l.ctnSmall,r2(l.nw),r2(l.gw),r3(l.vol),l.plid!=null?l.plid:'']));
+  sm.getRow(1).font={bold:true};
+  // Chi tiết carton từng PO
   P.forEach(p=>{
     if(!p.cartons) return;
-    const a=[[`PACKING LIST DETAIL — ${p.order}  (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})`],
-             [`Sheets: ${p.sheets.join(' + ')}`],[]];
+    const ws=wb.addWorksheet(('PL '+p.order).substring(0,31));
+    ws.addRow([`PACKING LIST DETAIL — ${p.order} (${p.form==='THUONG'?'FORM THUONG':'FORM CHENH'})`]);
+    ws.addRow([`Sheets: ${p.sheets.join(' + ')}`]); ws.addRow([]);
     const header=['Case','Reference','Color','Units/case','Sizes','Tot ctns','Tot pcs','N.W','G.W','L','W','H','Note','Group'];
-    const push=(rows,grp)=>rows.forEach(c=>{
-      a.push([c.from===c.to?c.from:`${c.from}-${c.to}`,c.reference||'',c.color||'',c.units,
-        sizeStr(c.sizes),c.totCtn,c.totPcs,r2(c.nw),r2(c.gw),c.dim[0],c.dim[1],c.dim[2],c.note,grp]);
-    });
+    const push=(rows,grp)=>rows.forEach(c=>ws.addRow([c.from===c.to?c.from:`${c.from}-${c.to}`,c.reference||'',c.color||'',c.units,sizeStr(c.sizes),c.totCtn,c.totPcs,r2(c.nw),r2(c.gw),c.dim[0],c.dim[1],c.dim[2],c.note,grp]));
     if(p.form==='CHENH'){
-      a.push(['--- SOLID (thùng nguyên) ---']); a.push(header);
+      ws.addRow(['--- SOLID (thùng nguyên) ---']); ws.addRow(header);
       push(p.cartons.filter(c=>!c.irregular),'SOLID');
-      a.push([]); a.push(['--- IRREGULAR / SS (thùng lẻ) ---']); a.push(header);
+      ws.addRow([]); ws.addRow(['--- IRREGULAR / SS (thùng lẻ) ---']); ws.addRow(header);
       push(p.cartons.filter(c=>c.irregular),'IRREGULAR');
-    }else{
-      a.push(header); push(p.cartons,'THUONG');
-    }
-    const ws=XLSX.utils.aoa_to_sheet(a);
-    ws['!cols']=[{wch:9},{wch:12},{wch:16},{wch:9},{wch:16},{wch:8},{wch:8},{wch:7},{wch:7},{wch:5},{wch:5},{wch:5},{wch:12},{wch:10}];
-    let nm=('PL '+p.order).substring(0,31);
-    XLSX.utils.book_append_sheet(wb,ws,nm);
+    }else{ ws.addRow(header); push(p.cartons,'THUONG'); }
   });
+}
 
-  const base=(STATE.fname||'gut_hang').replace(/\.(xlsb|xlsx|xls)$/i,'');
-  XLSX.writeFile(wb, `INV_PKL_${base}.xlsx`);
+function downloadBlob(blob, name){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
 
 /* ============ UI wiring ============ */
