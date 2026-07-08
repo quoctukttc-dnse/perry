@@ -82,7 +82,8 @@
           <div class="stat"><b id="stGW">0</b><span>G.W (kg)</span></div>
         </div>
         <div class="row">
-          <button id="btnExport" class="btn green">⬇ Tải file INV + PKL (.xlsx)</button>
+          <button id="btnExport" class="btn green">⬇ File INV + PKL (.xlsx)</button>
+          <button id="btnCustomer" class="btn">⬇ File hệ thống khách (breakdown)</button>
         </div>
       </div>
       <div id="srcInfo" class="msg ok"></div>
@@ -270,7 +271,13 @@ function parseStyleSheet(wb, po){
     let lab = (typeof h2[c]==='string' && h2[c].trim()) ? h2[c] : h1[c];
     if(lab!=null && lab!=='') sizeCols.push({c, label:String(lab).replace('.0','').trim()});
   }
-  const C={caseFrom:0,caseTo:1,style:2,color:3,ccode:4,units:5,totCtn:16,totPcs:17,vol:18,nw:19,gw:20,note:21,L:22,W:23,H:24};
+  // Map cột theo TÊN trong header row (bố cục N.W/G.W/NOTE/Carton size khác nhau giữa các file)
+  const findHdr=(pred)=>{ for(let c=0;c<h1.length;c++){ if(pred(norm(h1[c]))) return c; } return -1; };
+  const nwC=findHdr(v=>v.startsWith('n.w')), gwC=findHdr(v=>v.startsWith('g.w'));
+  const noteC=findHdr(v=>v==='note'), cartL=findHdr(v=>v.includes('carton') && v.includes('size'));
+  const C={caseFrom:0,caseTo:1,style:2,color:3,ccode:4,units:5,totCtn:16,totPcs:17,vol:18,
+    nw: nwC>=0?nwC:19, gw: gwC>=0?gwC:20, note: noteC>=0?noteC:21,
+    L: cartL>=0?cartL:22, W: cartL>=0?cartL+1:23, H: cartL>=0?cartL+2:24};
   const items=[]; let curRef=null,curColor=null,curCode=null;
   const usedLabels=new Set();
   for(let i=hr+2;i<rows.length;i++){
@@ -617,6 +624,91 @@ function downloadBlob(blob, name){
   document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
 
+/* ============ Xuất file HỆ THỐNG KHÁCH: DETAIL BREAKDOWN mỗi PO 1 sheet ============ */
+async function exportCustomer(){
+  const btn=document.getElementById('btnCustomer');
+  btn.disabled=true; const old=btn.textContent; btn.textContent='Đang tạo file...';
+  try{
+    const wb=new ExcelJS.Workbook();
+    let n=0;
+    STATE.pos.forEach(p=>{ if(p.detail && p.detail.items.length){ buildBreakdownSheet(wb, p); n++; } });
+    if(!n) throw new Error('Không có PO nào có sheet chi tiết carton trong file gút hàng.');
+    const out=await wb.xlsx.writeBuffer();
+    const base=(STATE.fname||'gut_hang').replace(/\.(xlsb|xlsx|xls)$/i,'');
+    downloadBlob(new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), `PACKING_BREAKDOWN_${base}.xlsx`);
+  }catch(err){ console.error(err); alert('Lỗi tạo file: '+err.message); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+function buildBreakdownSheet(wb, p){
+  const {items, sizeLabels}=p.detail;
+  const ws=wb.addWorksheet(p.order.substring(0,31));
+  const gByKey={}; p.detail.groups.forEach(g=>gByKey[g.ref+'|'+g.color]=g);
+  const nS=sizeLabels.length;
+  const cF=1,cT=2,cStyle=3,cColor=4,cCode=5,cUnits=6, cS0=7;              // size cols cS0..cS0+nS-1
+  const cCtn=cS0+nS, cPcs=cCtn+1, cVol=cPcs+1, cNw=cVol+1, cGw=cNw+1, cNote=cGw+1, cL=cNote+1, cW=cL+1, cH=cW+1;
+  const lastCol=cH;
+  const thin={style:'thin',color:{argb:'FF999999'}};
+  const border={top:thin,left:thin,right:thin,bottom:thin};
+  const cell=(r,c,v,opt={})=>{ const x=ws.getCell(r,c); x.value=(v===''||v==null?null:v);
+    x.border=border; x.alignment={vertical:'middle',horizontal:opt.left?'left':'center'};
+    x.font=Object.assign({name:'Times New Roman',size:10}, opt.font||{});
+    if(opt.fill) x.fill={type:'pattern',pattern:'solid',fgColor:{argb:opt.fill}}; };
+  // Tiêu đề
+  ws.mergeCells(1,1,1,lastCol); const t=ws.getCell(1,1); t.value='PACKING LIST'; t.font={name:'Times New Roman',size:16,bold:true}; t.alignment={horizontal:'center'};
+  ws.mergeCells(2,1,2,lastCol); const t2=ws.getCell(2,1); t2.value='DETAIL BREAKDOWN'; t2.font={name:'Times New Roman',size:11,bold:true}; t2.alignment={horizontal:'center'};
+  ws.getCell(4,1).value='PO#:'; ws.getCell(4,1).font={bold:true,name:'Times New Roman'}; ws.getCell(4,2).value=p.order; ws.getCell(4,2).font={bold:true,name:'Times New Roman'};
+  const totCtnReal=p.detail.groups.reduce((s,g)=>s+g.real,0);
+  ws.getCell(4,cCtn).value='CTNS:'; ws.getCell(4,cCtn).font={bold:true,name:'Times New Roman'}; ws.getCell(4,cPcs).value='1 - '+totCtnReal;
+  // Header
+  const HR=6;
+  cell(HR,cF,'CASE',{font:{bold:true}}); cell(HR,cT,'FROM-TO',{font:{bold:true}});
+  cell(HR,cStyle,'STYLE',{font:{bold:true}}); cell(HR,cColor,'COLOR',{font:{bold:true}}); cell(HR,cCode,'Color code',{font:{bold:true}});
+  cell(HR,cUnits,'UNITS/CASE',{font:{bold:true}});
+  sizeLabels.forEach((l,i)=>cell(HR,cS0+i,l,{font:{bold:true}}));
+  cell(HR,cCtn,'TOT CTNS',{font:{bold:true}}); cell(HR,cPcs,'TOT PCS',{font:{bold:true}}); cell(HR,cVol,'Vol(m3)',{font:{bold:true}});
+  cell(HR,cNw,'N.W (kg)',{font:{bold:true}}); cell(HR,cGw,'G.W (kg)',{font:{bold:true}}); cell(HR,cNote,'NOTE',{font:{bold:true}});
+  cell(HR,cL,'L',{font:{bold:true}}); cell(HR,cW,'W',{font:{bold:true}}); cell(HR,cH,'H',{font:{bold:true}});
+  ws.getCell(HR-1,cL).value='Carton Size (Inch)'; ws.getCell(HR-1,cL).font={name:'Times New Roman',size:9,italic:true};
+  // Body
+  let r=HR+1, curKey=null;
+  const writeSub=(key)=>{ const g=gByKey[key]; if(!g) return;
+    cell(r,cStyle,'TOTAL '+cleanColor(g.color),{font:{bold:true},left:true,fill:'FFCCF2CC'});
+    for(const c of [cF,cT,cColor,cCode,cUnits]) cell(r,c,'',{fill:'FFCCF2CC'});
+    sizeLabels.forEach((l,i)=>cell(r,cS0+i, g.sizes[l]||null, {font:{bold:true},fill:'FFCCF2CC'}));
+    cell(r,cCtn,g.real,{font:{bold:true},fill:'FFCCF2CC'}); cell(r,cPcs,g.pcs,{font:{bold:true},fill:'FFCCF2CC'});
+    cell(r,cVol,r3(g.vol),{fill:'FFCCF2CC'}); cell(r,cNw,r2(g.nw),{fill:'FFCCF2CC'}); cell(r,cGw,r2(g.gw),{fill:'FFCCF2CC'});
+    cell(r,cNote,'',{fill:'FFCCF2CC'}); cell(r,cL,'',{fill:'FFCCF2CC'});cell(r,cW,'',{fill:'FFCCF2CC'});cell(r,cH,'',{fill:'FFCCF2CC'});
+    r++; };
+  items.forEach(it=>{
+    if(it.type==='note'){ cell(r,cF,it.text,{left:true}); for(let c=cT;c<=cH;c++) cell(r,c,''); cell(r,cNote,it.remark); r++; return; }
+    const key=it.reference+'|'+it.color;
+    if(curKey!==null && key!==curKey) writeSub(curKey);
+    curKey=key;
+    const smap={}; it.sizes.forEach(s=>smap[s.label]=s.qty);
+    cell(r,cF,it.from); cell(r,cT,it.to); cell(r,cStyle,it.reference,{left:true}); cell(r,cColor,it.color,{left:true}); cell(r,cCode,it.colorCode); cell(r,cUnits,it.units);
+    sizeLabels.forEach((l,i)=>cell(r,cS0+i, smap[l]||null));
+    cell(r,cCtn,it.ctnReal||null); cell(r,cPcs,it.totPcs); cell(r,cVol,r3(it.vol)); cell(r,cNw,r2(it.ttlNw)); cell(r,cGw,r2(it.ttlGw));
+    cell(r,cNote,it.note); cell(r,cL,it.dim[0]||null); cell(r,cW,it.dim[1]||null); cell(r,cH,it.dim[2]||null);
+    r++;
+  });
+  if(curKey!==null) writeSub(curKey);
+  // Grand total
+  const G=p.detail.groups;
+  const gsz={}; sizeLabels.forEach(l=>gsz[l]=G.reduce((s,g)=>s+(g.sizes[l]||0),0));
+  cell(r,cStyle,'GRAND TOTAL',{font:{bold:true},left:true,fill:'FFFFE08A'});
+  for(const c of [cF,cT,cColor,cCode,cUnits]) cell(r,c,'',{fill:'FFFFE08A'});
+  sizeLabels.forEach((l,i)=>cell(r,cS0+i,gsz[l]||null,{font:{bold:true},fill:'FFFFE08A'}));
+  cell(r,cCtn,G.reduce((s,g)=>s+g.real,0),{font:{bold:true},fill:'FFFFE08A'});
+  cell(r,cPcs,G.reduce((s,g)=>s+g.pcs,0),{font:{bold:true},fill:'FFFFE08A'});
+  cell(r,cVol,r3(G.reduce((s,g)=>s+g.vol,0)),{fill:'FFFFE08A'});
+  cell(r,cNw,r2(G.reduce((s,g)=>s+g.nw,0)),{fill:'FFFFE08A'}); cell(r,cGw,r2(G.reduce((s,g)=>s+g.gw,0)),{fill:'FFFFE08A'});
+  cell(r,cNote,'',{fill:'FFFFE08A'});cell(r,cL,'',{fill:'FFFFE08A'});cell(r,cW,'',{fill:'FFFFE08A'});cell(r,cH,'',{fill:'FFFFE08A'});
+  // widths
+  ws.getColumn(cStyle).width=12; ws.getColumn(cColor).width=15; ws.getColumn(cUnits).width=10;
+  ws.getColumn(cCtn).width=9; ws.getColumn(cPcs).width=9; ws.getColumn(cVol).width=10; ws.getColumn(cNw).width=9; ws.getColumn(cGw).width=9; ws.getColumn(cNote).width=11;
+}
+
 /* ============ UI wiring ============ */
 const drop=document.getElementById('drop'), fileEl=document.getElementById('file');
 drop.onclick=()=>fileEl.click();
@@ -625,6 +717,7 @@ fileEl.onchange=e=>{ if(e.target.files[0]) readFile(e.target.files[0]); };
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
 drop.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
 document.getElementById('btnExport').onclick=exportXlsx;
+document.getElementById('btnCustomer').onclick=exportCustomer;
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
